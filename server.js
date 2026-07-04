@@ -16,6 +16,22 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, hasKey: !!process.env.GROQ_API_KEY })
 })
 
+app.get('/api/test', async (_req, res) => {
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(503).json({ error: 'GROQ_API_KEY is not set.' })
+  }
+  try {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: 'Say hello and confirm you are working' }],
+      max_tokens: 256,
+    })
+    res.json({ response: completion.choices[0]?.message?.content || '(no response)' })
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Groq request failed' })
+  }
+})
+
 app.post('/api/analyze', async (req, res) => {
   const { invoiceText, contractText, invoiceName, contractName } = req.body
 

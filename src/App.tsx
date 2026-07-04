@@ -10,6 +10,22 @@ type AppState = 'landing' | 'uploading' | 'analyzing' | 'results'
 
 function App() {
   const [state, setState] = useState<AppState>('landing')
+  const [testResponse, setTestResponse] = useState<string | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
+
+  const handleGroqTest = async () => {
+    setTestLoading(true)
+    setTestResponse(null)
+    try {
+      const res = await fetch('/api/test')
+      const data = await res.json()
+      setTestResponse(data.response || data.error || 'No response')
+    } catch (err) {
+      setTestResponse('Request failed: ' + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setTestLoading(false)
+    }
+  }
   const [invoice, setInvoice] = useState<UploadedFile | null>(null)
   const [contract, setContract] = useState<UploadedFile | null>(null)
   const [result, setResult] = useState<AnalysisResult | null>(null)
@@ -83,6 +99,22 @@ function App() {
             Start Checking
             <ChevronRight size={20} />
           </button>
+
+          <div className="mt-10">
+            <button
+              onClick={handleGroqTest}
+              disabled={testLoading}
+              className="bg-white/10 hover:bg-white/20 border border-white/20 text-white px-6 py-3 rounded-xl font-medium transition-colors disabled:opacity-50"
+            >
+              {testLoading ? 'Asking Groq...' : 'Test Groq Connection'}
+            </button>
+            {testResponse && (
+              <div className="mt-4 max-w-xl mx-auto bg-white/5 border border-white/15 rounded-xl p-4 text-left">
+                <p className="text-xs text-slate-500 mb-1">Groq response:</p>
+                <p className="text-slate-200 text-sm leading-relaxed">{testResponse}</p>
+              </div>
+            )}
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-24">
             {[
