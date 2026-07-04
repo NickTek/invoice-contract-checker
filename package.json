@@ -25,7 +25,8 @@
     "react-dom": "^19.2.7",
     "react-dropzone": "^15.0.0",
     "react-router-dom": "^7.18.1",
-    "tailwindcss": "^4.3.2"
+    "tailwindcss": "^4.3.2",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

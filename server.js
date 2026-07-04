@@ -1,86 +1,132 @@
 import express from 'express'
 import cors from 'cors'
+import multer from 'multer'
+import { createRequire } from 'module'
 import Groq from 'groq-sdk'
+import mammoth from 'mammoth'
+import { createWorker } from 'tesseract.js'
+
+const require = createRequire(import.meta.url)
+const pdfParse = require('pdf-parse')
 
 const app = express()
 const PORT = 3001
 
 app.use(cors())
-app.use(express.json({ limit: '2mb' }))
+app.use(express.json())
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
 })
+
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+async function extractText(buffer, mimetype, originalname) {
+  const ext = originalname.split('.').pop().toLowerCase()
+
+  if (ext === 'pdf' || mimetype === 'application/pdf') {
+    const data = await pdfParse(buffer)
+    return data.text.trim()
+  }
+
+  if (ext === 'docx' || mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    const result = await mammoth.extractRawText({ buffer })
+    return result.value.trim()
+  }
+
+  if (ext === 'doc' || mimetype === 'application/msword') {
+    const result = await mammoth.extractRawText({ buffer })
+    return result.value.trim()
+  }
+
+  const imageTypes = ['jpg', 'jpeg', 'png', 'webp', 'tiff', 'tif', 'bmp', 'gif']
+  if (imageTypes.includes(ext) || mimetype.startsWith('image/')) {
+    const worker = await createWorker('eng')
+    const { data: { text } } = await worker.recognize(buffer)
+    await worker.terminate()
+    return text.trim()
+  }
+
+  if (ext === 'txt' || mimetype === 'text/plain') {
+    return buffer.toString('utf-8').trim()
+  }
+
+  throw new Error(`Unsupported file type: .${ext}`)
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, hasKey: !!process.env.GROQ_API_KEY })
 })
 
-app.get('/api/test', async (_req, res) => {
+app.post('/api/check', upload.fields([
+  { name: 'contract', maxCount: 1 },
+  { name: 'invoice', maxCount: 1 },
+]), async (req, res) => {
   if (!process.env.GROQ_API_KEY) {
-    return res.status(503).json({ error: 'GROQ_API_KEY is not set.' })
+    return res.status(503).json({ error: 'GROQ_API_KEY is not configured.' })
+  }
+
+  const contractFile = req.files?.contract?.[0]
+  const invoiceFile = req.files?.invoice?.[0]
+
+  if (!contractFile || !invoiceFile) {
+    return res.status(400).json({ error: 'Both a contract and an invoice file are required.' })
+  }
+
+  let contractText, invoiceText
+  try {
+    contractText = await extractText(contractFile.buffer, contractFile.mimetype, contractFile.originalname)
+  } catch (err) {
+    return res.status(400).json({ error: `Could not read contract: ${err.message}` })
   }
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: 'Say hello and confirm you are working' }],
-      max_tokens: 256,
-    })
-    res.json({ response: completion.choices[0]?.message?.content || '(no response)' })
+    invoiceText = await extractText(invoiceFile.buffer, invoiceFile.mimetype, invoiceFile.originalname)
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Groq request failed' })
-  }
-})
-
-app.post('/api/analyze', async (req, res) => {
-  const { invoiceText, contractText, invoiceName, contractName } = req.body
-
-  if (!invoiceText || !contractText) {
-    return res.status(400).json({ error: 'Both invoiceText and contractText are required.' })
+    return res.status(400).json({ error: `Could not read invoice: ${err.message}` })
   }
 
-  if (!process.env.GROQ_API_KEY) {
-    return res.status(503).json({ error: 'GROQ_API_KEY is not configured. Please add it as a secret.' })
+  if (!contractText || contractText.length < 10) {
+    return res.status(400).json({ error: 'Contract file appears to be empty or unreadable.' })
+  }
+  if (!invoiceText || invoiceText.length < 10) {
+    return res.status(400).json({ error: 'Invoice file appears to be empty or unreadable.' })
   }
 
-  const systemPrompt = `You are an expert contract analyst and invoice auditor. Your job is to compare an invoice against a contract and identify every discrepancy, mismatch, or concern.
+  const today = new Date().toISOString().split('T')[0]
 
-You must respond with ONLY valid JSON — no markdown, no prose, no code fences. The JSON must match this exact schema:
+  const systemPrompt = `You are an expert invoice auditor. Analyze a contract and an invoice, then return ONLY valid JSON — no markdown, no code fences, no commentary.
 
+Return this exact structure:
 {
-  "summary": "string — 2-3 sentence plain-English summary of findings",
-  "overallStatus": "pass" | "warning" | "fail",
+  "status": "No Issues Found" or "Issues Found",
+  "contract_summary": {
+    "vendor": "vendor name from contract or null",
+    "rate_terms": "pricing/rate terms from contract",
+    "payment_terms": "payment terms from contract"
+  },
+  "invoice_summary": {
+    "vendor": "vendor name from invoice or null",
+    "line_items": ["item description and amount", ...],
+    "total": "total amount from invoice"
+  },
   "discrepancies": [
-    {
-      "id": "string — unique short id like 'a1b2c3'",
-      "severity": "critical" | "warning" | "info",
-      "category": "string — e.g. Amount, Dates, Payment Terms, Parties, Tax, Scope, Authorization",
-      "title": "string — short title of the issue",
-      "description": "string — clear plain-English explanation",
-      "invoiceValue": "string | null — the value as stated in the invoice",
-      "contractValue": "string | null — the value as stated in the contract",
-      "recommendation": "string — specific actionable advice"
-    }
-  ],
-  "matchedItems": ["string — things that correctly match between the two documents"]
+    "Plain English description of each issue found"
+  ]
 }
 
 Rules:
-- severity "critical": must fix before payment (wrong parties, amount exceeds contract, unauthorized items)
-- severity "warning": should review (date mismatches, missing tax info, ambiguous terms)
-- severity "info": good to know (formatting notes, standard observations)
-- overallStatus "fail" if any critical issues, "warning" if only warnings, "pass" if clean
-- matchedItems should list 2-5 things that DO match (e.g. matching amounts, dates, party names, payment terms)
-- Be specific and quote exact values from the documents when possible
-- If a document is too short or seems like a placeholder, note it as critical`
+- Today is ${today}. Flag any invoice dated more than 90 days ago as unusually old.
+- Check: vendor name match, rates/prices match contract terms, line item math adds up to the stated total, payment terms match.
+- discrepancies must be an array of strings. Empty array [] if status is "No Issues Found".
+- Be specific — quote the actual values that conflict (e.g. "Invoice rate is $120/hr but contract specifies $100/hr").
+- If text is too short or garbled to analyze, set status to "Issues Found" and note it in discrepancies.`
 
-  const userPrompt = `Compare this invoice against this contract and return the JSON analysis.
+  const userPrompt = `CONTRACT TEXT:
+${contractText.slice(0, 8000)}
 
-=== INVOICE: "${invoiceName}" ===
-${invoiceText.slice(0, 6000)}
-
-=== CONTRACT: "${contractName}" ===
-${contractText.slice(0, 6000)}`
+INVOICE TEXT:
+${invoiceText.slice(0, 8000)}`
 
   try {
     const completion = await groq.chat.completions.create({
@@ -89,8 +135,8 @@ ${contractText.slice(0, 6000)}`
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      temperature: 0.1,
-      max_tokens: 2048,
+      temperature: 0.05,
+      max_tokens: 1024,
     })
 
     const raw = completion.choices[0]?.message?.content?.trim() || ''
@@ -99,32 +145,20 @@ ${contractText.slice(0, 6000)}`
     try {
       parsed = JSON.parse(raw)
     } catch {
-      const jsonMatch = raw.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0])
+      const match = raw.match(/\{[\s\S]*\}/)
+      if (match) {
+        parsed = JSON.parse(match[0])
       } else {
-        throw new Error('Model returned non-JSON response')
+        throw new Error('Model returned non-JSON output')
       }
     }
 
     if (!Array.isArray(parsed.discrepancies)) parsed.discrepancies = []
-    if (!Array.isArray(parsed.matchedItems)) parsed.matchedItems = []
-
-    parsed.discrepancies = parsed.discrepancies.map((d, i) => ({
-      id: d.id || Math.random().toString(36).slice(2, 9),
-      severity: ['critical', 'warning', 'info'].includes(d.severity) ? d.severity : 'info',
-      category: d.category || 'General',
-      title: d.title || 'Issue detected',
-      description: d.description || '',
-      invoiceValue: d.invoiceValue ?? null,
-      contractValue: d.contractValue ?? null,
-      recommendation: d.recommendation || '',
-    }))
 
     res.json(parsed)
   } catch (err) {
     console.error('Groq error:', err)
-    res.status(500).json({ error: err.message || 'Analysis failed' })
+    res.status(500).json({ error: err.message || 'AI analysis failed. Please try again.' })
   }
 })
 
