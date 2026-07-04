@@ -8,6 +8,7 @@
     "server": "node server.js",
     "client": "vite",
     "build": "tsc -b && vite build",
+    "start": "node server.js",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -26,6 +27,7 @@
     "react-dom": "^19.2.7",
     "react-dropzone": "^15.0.0",
     "react-router-dom": "^7.18.1",
+    "serve-static": "^2.2.1",
     "tailwindcss": "^4.3.2",
     "tesseract.js": "^7.0.0"
   },

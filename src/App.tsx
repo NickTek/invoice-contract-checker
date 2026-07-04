@@ -109,6 +109,13 @@ export default function App() {
 
     try {
       const res = await fetch('/api/check', { method: 'POST', body: form })
+      const contentType = res.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) {
+        throw new Error(
+          `Server returned an unexpected response (HTTP ${res.status}). ` +
+          'The analysis server may not be running. Please try again or contact support.'
+        )
+      }
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || `Server error ${res.status}`)
       setResult(data)

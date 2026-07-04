@@ -4,13 +4,17 @@ import multer from 'multer'
 import { createRequire } from 'module'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { existsSync } from 'fs'
 import { writeFile, readdir, readFile, rm, mkdtemp } from 'fs/promises'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { tmpdir, homedir } from 'os'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import Groq from 'groq-sdk'
 import mammoth from 'mammoth'
 import { createWorker } from 'tesseract.js'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 GlobalWorkerOptions.workerSrc = new URL(
   './node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs',
@@ -20,9 +24,10 @@ GlobalWorkerOptions.workerSrc = new URL(
 const execFileAsync = promisify(execFile)
 const require = createRequire(import.meta.url)
 const pdfParse = require('pdf-parse')
-
 const app = express()
-const PORT = 3001
+const PORT = process.env.PORT || 3001
+const IS_PROD = existsSync(join(__dirname, 'dist', 'index.html'))
+
 app.use(cors())
 app.use(express.json())
 
@@ -276,6 +281,16 @@ Rules:
   }
 })
 
-app.listen(PORT, 'localhost', () => {
-  console.log(`API server running on http://localhost:${PORT}`)
+// In production, serve the built React app for all non-API routes
+if (IS_PROD) {
+  const { default: serveStatic } = await import('serve-static')
+  app.use(serveStatic(join(__dirname, 'dist')))
+  app.use((_req, res) => {
+    res.sendFile(join(__dirname, 'dist', 'index.html'))
+  })
+  console.log('[server] Serving static build from ./dist')
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${PORT} (${IS_PROD ? 'production' : 'development'})`)
 })
